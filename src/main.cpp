@@ -124,6 +124,9 @@ public:
     {
         MTL::RenderPassDescriptor* const renderPassDesc =
             MTL::RenderPassDescriptor::alloc()->init();
+        // Objects created with new, alloc, Create, copy, mutableCopy should be managed either by
+        // NS::SharedPtr, or using an autoreleasepool.
+        renderPassDesc->autorelease();
         MTL::RenderPassColorAttachmentDescriptor* const colorAttachmentDesc =
             renderPassDesc->colorAttachments()->object(0);
         colorAttachmentDesc->setTexture(drawable->texture());
