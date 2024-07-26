@@ -41,9 +41,7 @@ public:
         : mDevice(std::move(device)),
           mCommandQueue(NS::TransferPtr(mDevice->newCommandQueue())),
           mPSO(),
-          mVertexPositionsBuffer(),
-          mVertexColorsBuffer(),
-          mUniformsBuffer()
+          mVertexPositionsBuffer()
     {
         if (!mDevice)
         {
@@ -68,18 +66,14 @@ public:
                     half3 color;
                 };
 
-                struct Uniforms {
-                    float4x4 viewProjectionMatrix;
-                };
-
                 VertexOutput vertex vertexMain( uint vertexId [[vertex_id]],
-                                    device const float4* positions [[buffer(0)]],
-                                    device const float4* colors [[buffer(1)]],
-                                    constant const Uniforms& uniforms [[buffer(2)]] )
+                                    device const float2* positions [[buffer(0)]] )
                 {
+                    const float2 pos = positions[vertexId].xy;
+                    const float2 uv = pos * float2(0.5, -0.5) + float2(0.5, 0.5);
                     VertexOutput out;
-                    out.position = uniforms.viewProjectionMatrix * positions[ vertexId ]; 
-                    out.color = half3 ( colors[ vertexId ].xyz );
+                    out.position = float4(pos, 0.f, 1.0);
+                    out.color = half3(half2(uv), 0.0);
                     return out;
                 }
 
@@ -114,41 +108,30 @@ public:
         }
 
         {
-            constexpr std::size_t NUM_VERTICES = 3;
+            constexpr std::size_t NUM_VERTICES = 6;
 
-            simd::float4 positions[NUM_VERTICES] = {
-                {-0.8f, 0.8f, 0.0f, 1.0f}, {0.0f, -0.8f, 0.0f, 1.0f}, {+0.8f, 0.8f, 0.0f, 1.0f}};
-
-            simd::float4 colors[NUM_VERTICES] = {
-                {1.0, 0.3f, 0.2f, 1.0f}, {0.8f, 1.0, 0.0f, 1.0f}, {0.8f, 0.0f, 1.0f, 1.0f}};
-
-            const std::size_t positionsDataSize = NUM_VERTICES * sizeof(simd::float4);
-            const std::size_t colorDataSize = NUM_VERTICES * sizeof(simd::float4);
-
+            simd::float2 quadPositions[NUM_VERTICES] = {
+                // clang-format off
+                {-1.0, -1.0,},
+                {1.0, -1.0,},
+                {1.0, 1.0,},
+                {1.0, 1.0,},
+                {-1.0, 1.0,},
+                {-1.0, -1.0,},
+                // clang-format on
+            };
+            const std::size_t positionsDataSize = NUM_VERTICES * sizeof(simd::float2);
             mVertexPositionsBuffer = NS::TransferPtr(
                 mDevice->newBuffer(positionsDataSize, MTL::ResourceStorageModeManaged));
-            mVertexColorsBuffer =
-                NS::TransferPtr(mDevice->newBuffer(colorDataSize, MTL::ResourceStorageModeManaged));
-            std::memcpy(mVertexPositionsBuffer->contents(), positions, positionsDataSize);
-            std::memcpy(mVertexColorsBuffer->contents(), colors, colorDataSize);
+            std::memcpy(mVertexPositionsBuffer->contents(), quadPositions, positionsDataSize);
             // synchronize modified buffer sections to the GPU
             mVertexPositionsBuffer->didModifyRange(
                 NS::Range::Make(0, mVertexPositionsBuffer->length()));
-            mVertexColorsBuffer->didModifyRange(NS::Range::Make(0, mVertexColorsBuffer->length()));
-
-            mUniformsBuffer = NS::TransferPtr(mDevice->newBuffer(
-                sizeof(shader_types::Uniforms), MTL::ResourceStorageModeManaged));
         }
     }
 
-    void draw(CA::MetalDrawable* drawable, const glm::mat4& viewProjectionMat)
+    void draw(CA::MetalDrawable* drawable, const glm::mat4& /*viewProjectionMatrix*/)
     {
-        {
-            auto uniforms = reinterpret_cast<shader_types::Uniforms*>(mUniformsBuffer->contents());
-            uniforms->viewProjectionMatrix =
-                *reinterpret_cast<const simd::float4x4*>(&viewProjectionMat[0][0]);
-            mUniformsBuffer->didModifyRange(NS::Range::Make(0, sizeof(shader_types::Uniforms)));
-        }
 
         MTL::RenderPassDescriptor* const renderPassDesc =
             MTL::RenderPassDescriptor::alloc()->init();
@@ -168,9 +151,7 @@ public:
 
         renderEncoder->setRenderPipelineState(mPSO.get());
         renderEncoder->setVertexBuffer(mVertexPositionsBuffer.get(), 0, 0);
-        renderEncoder->setVertexBuffer(mVertexColorsBuffer.get(), 0, 1);
-        renderEncoder->setVertexBuffer(mUniformsBuffer.get(), 0, 2);
-        renderEncoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
+        renderEncoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(6));
 
         renderEncoder->endEncoding();
         commandBuffer->presentDrawable(drawable);
@@ -183,8 +164,6 @@ private:
     NS::SharedPtr<MTL::CommandQueue>        mCommandQueue;
     NS::SharedPtr<MTL::RenderPipelineState> mPSO;
     NS::SharedPtr<MTL::Buffer>              mVertexPositionsBuffer;
-    NS::SharedPtr<MTL::Buffer>              mVertexColorsBuffer;
-    NS::SharedPtr<MTL::Buffer>              mUniformsBuffer;
 };
 } // namespace nlrs
 
