@@ -7,13 +7,28 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_subdirectory(external)
 
-add_executable(metal-raytracer src/main.cpp src/cocoa_bridge.mm src/camera.cpp src/fly_camera_controller.cpp)
+set(RENDERER_SOURCE
+    camera.cpp
+    cgltf.c
+    cocoa_bridge.mm
+    fly_camera_controller.cpp
+    gltf_model.cpp
+    main.cpp
+    stb_image.c
+    texture.cpp
+)
+list(TRANSFORM RENDERER_SOURCE PREPEND ${CMAKE_CURRENT_LIST_DIR}/src/)
+
+add_executable(metal-raytracer ${RENDERER_SOURCE})
 target_include_directories(metal-raytracer PRIVATE ${METAL_CPP_INCLUDE_DIR})
 target_compile_options(metal-raytracer PRIVATE -W -Wall -Wextra)
 target_link_libraries(metal-raytracer
-    metal-cpp
+    cgltf
+    fmt
     glfw
-    glm::glm)
+    glm::glm
+    metal-cpp
+    stb)
 target_link_libraries(metal-raytracer
     "-framework Foundation"
     "-framework Metal"

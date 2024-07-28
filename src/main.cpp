@@ -4,17 +4,22 @@
 #include <Foundation/Foundation.hpp>
 #include <Metal/Metal.hpp>
 #include <QuartzCore/QuartzCore.hpp>
+#include <cgltf.h>
+#include <fmt/core.h>
 #include <GLFW/glfw3.h>
-#include <simd/simd.h>
 #include <glm/glm.hpp>
+#include <simd/simd.h>
 
 #include "cocoa_bridge.hpp"
 #include "fly_camera_controller.hpp"
+#include "gltf_model.hpp"
 
 #include <cassert>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <exception>
+#include <filesystem>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -23,6 +28,8 @@ constexpr MTL::PixelFormat COLOR_ATTACHMENT_FORMAT = MTL::PixelFormat::PixelForm
 constexpr int              WIDTH = 640;
 constexpr int              HEIGHT = 480;
 constexpr std::string_view WINDOW_TITLE = "metal-raytracer";
+
+namespace fs = std::filesystem;
 
 namespace nlrs
 {
@@ -33,6 +40,8 @@ struct Uniforms
     simd::float4x4 viewProjectionMatrix;
 };
 } // namespace shader_types
+
+void printHelp() { std::printf("Usage: metal-raytracer <input.glb>\n"); }
 
 class Renderer
 {
@@ -167,9 +176,25 @@ private:
 };
 } // namespace nlrs
 
-int main(int, char**)
+int main(int argc, char** argv)
 try
 {
+    if (argc != 2)
+    {
+        nlrs::printHelp();
+        return 0;
+    }
+
+    fs::path gltfPath = argv[1];
+    if (!fs::exists(gltfPath))
+    {
+        // std::printf("Error: %s does not exist\n", gltfPath.c_str());
+        fmt::print(stderr, "File {} does not exist\n", gltfPath.string());
+        return 1;
+    }
+
+    nlrs::GltfModel model(gltfPath);
+
     if (!glfwInit())
     {
         throw std::runtime_error("glfwInit failed");
