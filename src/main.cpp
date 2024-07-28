@@ -22,7 +22,7 @@
 constexpr MTL::PixelFormat COLOR_ATTACHMENT_FORMAT = MTL::PixelFormat::PixelFormatBGRA8Unorm_sRGB;
 constexpr int              WIDTH = 640;
 constexpr int              HEIGHT = 480;
-constexpr std::string_view WINDOW_TITLE = "Hello, Metal";
+constexpr std::string_view WINDOW_TITLE = "metal-raytracer";
 
 namespace nlrs
 {
