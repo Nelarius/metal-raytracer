@@ -10,6 +10,7 @@
 #include <glm/glm.hpp>
 #include <simd/simd.h>
 
+#include "assert.hpp"
 #include "cocoa_bridge.hpp"
 #include "fly_camera_controller.hpp"
 #include "gltf_model.hpp"
@@ -23,6 +24,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 constexpr MTL::PixelFormat COLOR_ATTACHMENT_FORMAT = MTL::PixelFormat::PixelFormatBGRA8Unorm_sRGB;
 constexpr int              WIDTH = 640;
@@ -46,11 +48,13 @@ void printHelp() { std::printf("Usage: metal-raytracer <input.glb>\n"); }
 class Renderer
 {
 public:
-    Renderer(NS::SharedPtr<MTL::Device> device)
+    Renderer(NS::SharedPtr<MTL::Device> device, const GltfModel& model)
         : mDevice(std::move(device)),
           mCommandQueue(NS::TransferPtr(mDevice->newCommandQueue())),
+          mHeap(),
           mPSO(),
-          mVertexPositionsBuffer()
+          mVertexPositionsBuffer(),
+          mAccelerationStructure()
     {
         if (!mDevice)
         {
@@ -60,6 +64,15 @@ public:
         if (!mCommandQueue)
         {
             throw std::runtime_error("Failed to create command queue");
+        }
+
+        {
+            auto heapDesc = NS::TransferPtr(MTL::HeapDescriptor::alloc()->init());
+            heapDesc->setStorageMode(MTL::StorageModePrivate);
+            heapDesc->setHazardTrackingMode(MTL::HazardTrackingModeTracked);
+            heapDesc->setType(MTL::HeapTypeAutomatic);
+            heapDesc->setSize(1 << 30);
+            mHeap = NS::TransferPtr(mDevice->newHeap(heapDesc.get()));
         }
 
         {
@@ -137,9 +150,86 @@ public:
             mVertexPositionsBuffer->didModifyRange(
                 NS::Range::Make(0, mVertexPositionsBuffer->length()));
         }
+
+        {
+            // Build triangle geometry buffers
+
+            std::vector<std::pair<NS::SharedPtr<MTL::Buffer>, NS::SharedPtr<MTL::Buffer>>> buffers;
+            for (const auto& mesh : model.meshes)
+            {
+                const std::size_t numVertices = mesh.positions.size();
+                const std::size_t numIndices = mesh.indices.size();
+
+                const std::size_t vertexDataSize = numVertices * sizeof(glm::vec3);
+                const std::size_t indexDataSize = numIndices * sizeof(std::uint32_t);
+
+                auto vertexBuffer = NS::TransferPtr(
+                    mDevice->newBuffer(vertexDataSize, MTL::ResourceStorageModeManaged));
+                auto indexBuffer = NS::TransferPtr(
+                    mDevice->newBuffer(indexDataSize, MTL::ResourceStorageModeManaged));
+
+                std::memcpy(vertexBuffer->contents(), mesh.positions.data(), vertexDataSize);
+                std::memcpy(indexBuffer->contents(), mesh.indices.data(), indexDataSize);
+
+                vertexBuffer->didModifyRange(NS::Range::Make(0, vertexBuffer->length()));
+                indexBuffer->didModifyRange(NS::Range::Make(0, indexBuffer->length()));
+
+                buffers.emplace_back(std::move(vertexBuffer), std::move(indexBuffer));
+            }
+
+            // Build geometry descriptors
+
+            std::vector<const NS::Object*> geometryDescriptors;
+            geometryDescriptors.reserve(buffers.size());
+
+            for (const auto& [vertexBuffer, indexBuffer] : buffers)
+            {
+                MTL::AccelerationStructureTriangleGeometryDescriptor* const triangleDesc =
+                    MTL::AccelerationStructureTriangleGeometryDescriptor::alloc()->init();
+                triangleDesc->setVertexBuffer(vertexBuffer.get());
+                triangleDesc->setVertexFormat(MTL::AttributeFormatFloat3);
+                triangleDesc->setIndexBuffer(indexBuffer.get());
+                triangleDesc->setIndexType(MTL::IndexTypeUInt32);
+                triangleDesc->setTriangleCount(indexBuffer->length() / 3);
+
+                const NS::Object* const triangleDescObj =
+                    static_cast<const NS::Object*>(triangleDesc);
+                geometryDescriptors.push_back(triangleDescObj);
+            }
+
+            // Build primitive acceleration structure
+
+            // TODO: are the pointers managed by the array or are they leaked?
+            auto geometryDescriptorsArray = NS::TransferPtr(
+                NS::Array::array(geometryDescriptors.data(), geometryDescriptors.size()));
+            auto primitiveAccelerationStructureDesc =
+                NS::TransferPtr(MTL::PrimitiveAccelerationStructureDescriptor::alloc()->init());
+            primitiveAccelerationStructureDesc->setGeometryDescriptors(
+                geometryDescriptorsArray.get());
+
+            const MTL::AccelerationStructureSizes sizes =
+                mDevice->accelerationStructureSizes(primitiveAccelerationStructureDesc.get());
+            auto scratchBuffer = NS::TransferPtr(
+                mDevice->newBuffer(sizes.buildScratchBufferSize, MTL::ResourceStorageModeManaged));
+            auto accelerationStructure =
+                NS::TransferPtr(mHeap->newAccelerationStructure(sizes.accelerationStructureSize));
+
+            // TODO: autorelease pool?
+            MTL::CommandBuffer* const commandBuffer = mCommandQueue->commandBuffer();
+            MTL::AccelerationStructureCommandEncoder* const cmdEncoder =
+                commandBuffer->accelerationStructureCommandEncoder();
+            cmdEncoder->buildAccelerationStructure(
+                accelerationStructure.get(),
+                primitiveAccelerationStructureDesc.get(),
+                scratchBuffer.get(),
+                0);
+            cmdEncoder->endEncoding();
+            commandBuffer->commit();
+            commandBuffer->waitUntilCompleted();
+        }
     }
 
-    void draw(CA::MetalDrawable* drawable, const glm::mat4& /*viewProjectionMatrix*/)
+    void draw(CA::MetalDrawable* drawable)
     {
 
         MTL::RenderPassDescriptor* const renderPassDesc =
@@ -169,10 +259,12 @@ public:
     }
 
 private:
-    NS::SharedPtr<MTL::Device>              mDevice;
-    NS::SharedPtr<MTL::CommandQueue>        mCommandQueue;
-    NS::SharedPtr<MTL::RenderPipelineState> mPSO;
-    NS::SharedPtr<MTL::Buffer>              mVertexPositionsBuffer;
+    NS::SharedPtr<MTL::Device>                mDevice;
+    NS::SharedPtr<MTL::CommandQueue>          mCommandQueue;
+    NS::SharedPtr<MTL::Heap>                  mHeap;
+    NS::SharedPtr<MTL::RenderPipelineState>   mPSO;
+    NS::SharedPtr<MTL::Buffer>                mVertexPositionsBuffer;
+    NS::SharedPtr<MTL::AccelerationStructure> mAccelerationStructure;
 };
 } // namespace nlrs
 
@@ -192,8 +284,6 @@ try
         fmt::print(stderr, "File {} does not exist\n", gltfPath.string());
         return 1;
     }
-
-    nlrs::GltfModel model(gltfPath);
 
     if (!glfwInit())
     {
@@ -215,7 +305,8 @@ try
     layer->setPixelFormat(COLOR_ATTACHMENT_FORMAT);
     nlrs::addLayerToGlfwWindow(window, layer.get());
 
-    nlrs::Renderer            renderer(device);
+    nlrs::GltfModel           model(gltfPath);
+    nlrs::Renderer            renderer(device, model);
     nlrs::FlyCameraController cameraController;
     cameraController.lookAt(glm::vec3(0.0f, 0.0f, 0.0f));
 
@@ -234,7 +325,7 @@ try
         {
             auto                     pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
             CA::MetalDrawable* const nextDrawable = layer->nextDrawable();
-            renderer.draw(nextDrawable, cameraController.viewProjectionMatrix());
+            renderer.draw(nextDrawable);
         }
     }
 
