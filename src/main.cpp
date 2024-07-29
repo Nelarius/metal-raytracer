@@ -37,9 +37,19 @@ namespace nlrs
 {
 namespace shader_types
 {
+struct Camera
+{
+    simd::float3 origin;
+    simd::float3 lowerLeftCorner;
+    simd::float3 horizontal;
+    simd::float3 vertical;
+    simd::float3 up;
+    simd::float3 right;
+};
+
 struct Uniforms
 {
-    simd::float4x4 viewProjectionMatrix;
+    Camera camera;
 };
 } // namespace shader_types
 
@@ -54,6 +64,7 @@ public:
           mHeap(),
           mPSO(),
           mVertexPositionsBuffer(),
+          mUniformsBuffer(),
           mAccelerationStructure()
     {
         if (!mDevice)
@@ -80,12 +91,15 @@ public:
 
             const char* shaderSrc = R"(
                 #include <metal_stdlib>
+                #include <metal_geometric>
+                #include <metal_raytracing>
+
                 using namespace metal;
 
                 struct VertexOutput
                 {
                     float4 position [[position]];
-                    half3 color;
+                    float2 uv;
                 };
 
                 VertexOutput vertex vertexMain( uint vertexId [[vertex_id]],
@@ -95,13 +109,40 @@ public:
                     const float2 uv = pos * float2(0.5, -0.5) + float2(0.5, 0.5);
                     VertexOutput out;
                     out.position = float4(pos, 0.f, 1.0);
-                    out.color = half3(half2(uv), 0.0);
+                    out.uv = uv;
                     return out;
                 }
 
-                half4 fragment fragmentMain( VertexOutput in [[stage_in]] )
+                struct Camera {
+                    float3 origin;
+                    float3 lowerLeftCorner;
+                    float3 horizontal;
+                    float3 vertical;
+                    float3 up;
+                    float3 right;
+                };
+
+                struct Uniforms {
+                    Camera camera;
+                };
+
+                raytracing::ray generateCameraRay(constant const Camera& camera, const float u, const float v) {
+                    float3 origin = camera.origin;
+                    float3 direction = normalize(camera.lowerLeftCorner + u * camera.horizontal + v * camera.vertical - origin);
+                    return raytracing::ray(origin, direction);
+                }
+
+                half4 fragment fragmentMain( VertexOutput in [[stage_in]],
+                                    constant const Uniforms& uniforms [[buffer(0)]],
+                                    raytracing::acceleration_structure<> accelerationStructure [[buffer(1)]] )
                 {
-                    return half4( in.color, 1.0 );
+                    raytracing::intersector<raytracing::triangle_data> intersector;
+                    const raytracing::ray ray = generateCameraRay(uniforms.camera, in.uv.x, 1.0 - in.uv.y);
+                    typename raytracing::intersector<raytracing::triangle_data>::result_type intersection = intersector.intersect(ray, accelerationStructure);
+                    if (intersection.type == raytracing::intersection_type::triangle) {
+                        return half4(1.0, 0.0, 1.0, 1.0);
+                    }
+                    return half4(0.0, 0.0, 0.0, 1.0);
                 }
             )";
 
@@ -152,6 +193,11 @@ public:
         }
 
         {
+            mUniformsBuffer = NS::TransferPtr(mDevice->newBuffer(
+                sizeof(shader_types::Uniforms), MTL::ResourceStorageModeManaged));
+        }
+
+        {
             // Build triangle geometry buffers
 
             std::vector<std::pair<NS::SharedPtr<MTL::Buffer>, NS::SharedPtr<MTL::Buffer>>> buffers;
@@ -181,7 +227,6 @@ public:
 
             std::vector<const NS::Object*> geometryDescriptors;
             geometryDescriptors.reserve(buffers.size());
-
             for (const auto& [vertexBuffer, indexBuffer] : buffers)
             {
                 MTL::AccelerationStructureTriangleGeometryDescriptor* const triangleDesc =
@@ -190,7 +235,7 @@ public:
                 triangleDesc->setVertexFormat(MTL::AttributeFormatFloat3);
                 triangleDesc->setIndexBuffer(indexBuffer.get());
                 triangleDesc->setIndexType(MTL::IndexTypeUInt32);
-                triangleDesc->setTriangleCount(indexBuffer->length() / 3);
+                triangleDesc->setTriangleCount(indexBuffer->length() / (sizeof(std::uint32_t) * 3));
 
                 const NS::Object* const triangleDescObj =
                     static_cast<const NS::Object*>(triangleDesc);
@@ -211,7 +256,8 @@ public:
                 mDevice->accelerationStructureSizes(primitiveAccelerationStructureDesc.get());
             auto scratchBuffer = NS::TransferPtr(
                 mDevice->newBuffer(sizes.buildScratchBufferSize, MTL::ResourceStorageModeManaged));
-            auto accelerationStructure =
+            // TODO: can this also be created using a device? What is the difference?
+            mAccelerationStructure =
                 NS::TransferPtr(mHeap->newAccelerationStructure(sizes.accelerationStructureSize));
 
             // TODO: autorelease pool?
@@ -219,7 +265,7 @@ public:
             MTL::AccelerationStructureCommandEncoder* const cmdEncoder =
                 commandBuffer->accelerationStructureCommandEncoder();
             cmdEncoder->buildAccelerationStructure(
-                accelerationStructure.get(),
+                mAccelerationStructure.get(),
                 primitiveAccelerationStructureDesc.get(),
                 scratchBuffer.get(),
                 0);
@@ -229,8 +275,20 @@ public:
         }
     }
 
-    void draw(CA::MetalDrawable* drawable)
+    void draw(CA::MetalDrawable* drawable, const Camera& camera)
     {
+        {
+            auto* uniforms = reinterpret_cast<shader_types::Uniforms*>(mUniformsBuffer->contents());
+            uniforms->camera = {
+                .origin = {camera.origin.x, camera.origin.y, camera.origin.z},
+                .lowerLeftCorner =
+                    {camera.lowerLeftCorner.x, camera.lowerLeftCorner.y, camera.lowerLeftCorner.z},
+                .horizontal = {camera.horizontal.x, camera.horizontal.y, camera.horizontal.z},
+                .vertical = {camera.vertical.x, camera.vertical.y, camera.vertical.z},
+                .up = {camera.up.x, camera.up.y, camera.up.z},
+                .right = {camera.right.x, camera.right.y, camera.right.z}};
+            mUniformsBuffer->didModifyRange(NS::Range::Make(0, sizeof(shader_types::Uniforms)));
+        }
 
         MTL::RenderPassDescriptor* const renderPassDesc =
             MTL::RenderPassDescriptor::alloc()->init();
@@ -250,6 +308,8 @@ public:
 
         renderEncoder->setRenderPipelineState(mPSO.get());
         renderEncoder->setVertexBuffer(mVertexPositionsBuffer.get(), 0, 0);
+        renderEncoder->setFragmentBuffer(mUniformsBuffer.get(), 0, 0);
+        renderEncoder->setFragmentAccelerationStructure(mAccelerationStructure.get(), 1);
         renderEncoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(6));
 
         renderEncoder->endEncoding();
@@ -264,6 +324,7 @@ private:
     NS::SharedPtr<MTL::Heap>                  mHeap;
     NS::SharedPtr<MTL::RenderPipelineState>   mPSO;
     NS::SharedPtr<MTL::Buffer>                mVertexPositionsBuffer;
+    NS::SharedPtr<MTL::Buffer>                mUniformsBuffer;
     NS::SharedPtr<MTL::AccelerationStructure> mAccelerationStructure;
 };
 } // namespace nlrs
@@ -325,7 +386,7 @@ try
         {
             auto                     pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
             CA::MetalDrawable* const nextDrawable = layer->nextDrawable();
-            renderer.draw(nextDrawable);
+            renderer.draw(nextDrawable, cameraController.getCamera());
         }
     }
 
