@@ -72,6 +72,11 @@ public:
             throw std::runtime_error("Device was null");
         }
 
+        if (!mDevice->supportsFamily(MTL::GPUFamilyMetal3))
+        {
+            throw std::runtime_error("Device does not support Metal 3");
+        }
+
         if (!mCommandQueue)
         {
             throw std::runtime_error("Failed to create command queue");
