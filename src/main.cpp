@@ -77,6 +77,11 @@ public:
             throw std::runtime_error("Device does not support Metal 3");
         }
 
+        if (MTL::ArgumentBuffersTier2 != mDevice->argumentBuffersSupport())
+        {
+            throw std::runtime_error("Device is not a tier 2 device for argument buffers");
+        }
+
         if (!mCommandQueue)
         {
             throw std::runtime_error("Failed to create command queue");
