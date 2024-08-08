@@ -14,6 +14,7 @@ set(RENDERER_SOURCE
     fly_camera_controller.cpp
     gltf_model.cpp
     main.cpp
+    renderer.cpp
     stb_image.c
     texture.cpp
 )
