@@ -18,11 +18,13 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
 #include <exception>
 #include <filesystem>
 #include <stdexcept>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -51,9 +53,90 @@ struct Uniforms
 {
     Camera camera;
 };
+
+struct TextureDescriptor
+{
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t offset;
+    std::uint32_t padding;
+};
+
+struct PrimitiveData
+{
+    simd::float2      uv0;
+    simd::float2      uv1;
+    simd::float2      uv2;
+    TextureDescriptor textureDescriptor;
+};
 } // namespace shader_types
 
 void printHelp() { std::printf("Usage: metal-raytracer <input.glb>\n"); }
+
+std::tuple<
+    std::vector<Texture::BgraPixel>,
+    std::vector<shader_types::PrimitiveData>,
+    std::vector<std::uint32_t>>
+buildPrimitiveData(const GltfModel& model)
+{
+    std::vector<std::uint32_t> primitiveDataOffsets;
+    primitiveDataOffsets.reserve(model.meshes.size());
+
+    std::vector<shader_types::PrimitiveData> primitiveData;
+    primitiveData.reserve(1 << 10);
+
+    std::vector<Texture::BgraPixel> textureData;
+    textureData.reserve(1 << 20);
+    // map base color textures to texture descriptors
+    std::vector<shader_types::TextureDescriptor> textureDescriptors;
+    textureDescriptors.reserve(model.baseColorTextures.size());
+    for (const auto& texture : model.baseColorTextures)
+    {
+        const auto        dimensions = texture.dimensions();
+        const auto        pixels = texture.pixels();
+        const std::size_t offset = textureData.size();
+
+        textureData.resize(textureData.size() + pixels.size());
+        std::memcpy(textureData.data() + offset, pixels.data(), pixels.size_bytes());
+
+        textureDescriptors.push_back({
+            .width = dimensions.width,
+            .height = dimensions.height,
+            .offset = static_cast<std::uint32_t>(offset),
+            .padding = 0,
+        });
+    }
+
+    for (const auto& mesh : model.meshes)
+    {
+        const std::uint32_t primitiveIdxOffset = static_cast<std::uint32_t>(primitiveData.size());
+        primitiveDataOffsets.push_back(primitiveIdxOffset);
+
+        const shader_types::TextureDescriptor textureDescriptor =
+            textureDescriptors[mesh.baseColorTextureIndex];
+
+        for (std::size_t i = 0; i < mesh.indices.size(); i += 3)
+        {
+            const std::uint32_t i0 = mesh.indices[i + 0];
+            const std::uint32_t i1 = mesh.indices[i + 1];
+            const std::uint32_t i2 = mesh.indices[i + 2];
+
+            const glm::vec2 uv0 = mesh.texCoords[i0];
+            const glm::vec2 uv1 = mesh.texCoords[i1];
+            const glm::vec2 uv2 = mesh.texCoords[i2];
+
+            primitiveData.push_back({
+                .uv0 = {uv0.x, uv0.y},
+                .uv1 = {uv1.x, uv1.y},
+                .uv2 = {uv2.x, uv2.y},
+                .textureDescriptor = textureDescriptor,
+            });
+        }
+    }
+
+    return std::make_tuple(
+        std::move(textureData), std::move(primitiveData), std::move(primitiveDataOffsets));
+}
 
 class Renderer
 {
@@ -65,6 +148,9 @@ public:
           mPSO(),
           mVertexPositionsBuffer(),
           mUniformsBuffer(),
+          mTextureBuffer(),
+          mPrimitiveBuffer(),
+          mPrimitiveBufferOffsets(),
           mAccelerationStructure()
     {
         if (!mDevice)
@@ -136,23 +222,65 @@ public:
                     Camera camera;
                 };
 
+                struct TextureDescriptor {
+                    uint32_t width;
+                    uint32_t height;
+                    uint32_t offset;
+                    uint32_t padding;
+                };
+
+                struct PrimitiveData {
+                    float2 uv0;
+                    float2 uv1;
+                    float2 uv2;
+                    TextureDescriptor textureDescriptor;
+                };
+
                 raytracing::ray generateCameraRay(constant const Camera& camera, const float u, const float v) {
                     float3 origin = camera.origin;
                     float3 direction = normalize(camera.lowerLeftCorner + u * camera.horizontal + v * camera.vertical - origin);
                     return raytracing::ray(origin, direction);
                 }
 
+                half3 textureLookup(device const uint32_t* textures, TextureDescriptor desc, float2 uv) {
+                    const float u = fract(uv.x);
+                    const float v = fract(uv.y);
+
+                    const uint32_t j = uint32_t(u * float(desc.width));
+                    const uint32_t i = uint32_t(v * float(desc.height));
+                    const uint32_t idx = i * desc.width + j;
+
+                    const uint32_t bgra = textures[desc.offset + idx];
+                    const float3 srgb = float3(float((bgra >> 16u) & 0xffu), float((bgra >> 8u) & 0xffu), float(bgra & 0xffu)) / 255.0f;
+                    const float3 linearRgb = pow(srgb, float3(2.2f));
+                    return half3(linearRgb);
+                }
+
                 half4 fragment fragmentMain( VertexOutput in [[stage_in]],
                                     constant const Uniforms& uniforms [[buffer(0)]],
-                                    raytracing::acceleration_structure<> accelerationStructure [[buffer(1)]] )
+                                    raytracing::acceleration_structure<> accelerationStructure [[buffer(1)]],
+                                    device const uint32_t* textureData [[buffer(2)]],
+                                    device const PrimitiveData* primitiveData [[buffer(3)]],
+                                    device const uint32_t* primitiveDataOffsets [[buffer(4)]] )
                 {
+                    half4 color = half4(0.0, 0.0, 0.0, 1.0);
                     raytracing::intersector<raytracing::triangle_data> intersector;
                     const raytracing::ray ray = generateCameraRay(uniforms.camera, in.uv.x, 1.0 - in.uv.y);
                     typename raytracing::intersector<raytracing::triangle_data>::result_type intersection = intersector.intersect(ray, accelerationStructure);
                     if (intersection.type == raytracing::intersection_type::triangle) {
-                        return half4(1.0, 0.0, 1.0, 1.0);
+                        const uint32_t primitiveIdx = intersection.primitive_id;
+                        const uint32_t geometryIdx = intersection.geometry_id;
+                        const uint32_t primitiveBufferOffset = primitiveDataOffsets[geometryIdx];
+                        const float2 barycentricCoord = intersection.triangle_barycentric_coord;   // raytracing::triangle_data tag
+                        device const PrimitiveData& primitive = primitiveData[primitiveBufferOffset + primitiveIdx];
+                        const float2 uv0 = primitive.uv0;
+                        const float2 uv1 = primitive.uv1;
+                        const float2 uv2 = primitive.uv2;
+                        const float2 uv = uv1 * barycentricCoord.x + uv2 * barycentricCoord.y + uv0 * (1.0 - barycentricCoord.x - barycentricCoord.y);
+                        const half3 rgb = textureLookup(textureData, primitive.textureDescriptor, uv);
+                        color = half4(rgb, 1.0);
                     }
-                    return half4(0.0, 0.0, 0.0, 1.0);
+                    return color;
                 }
             )";
 
@@ -205,6 +333,31 @@ public:
         {
             mUniformsBuffer = NS::TransferPtr(mDevice->newBuffer(
                 sizeof(shader_types::Uniforms), MTL::ResourceStorageModeManaged));
+        }
+
+        {
+            const auto [textureData, primitiveData, primitiveDataOffsets] =
+                buildPrimitiveData(model);
+            const std::size_t textureDataSize = textureData.size() * sizeof(Texture::BgraPixel);
+            const std::size_t primitiveDataSize =
+                primitiveData.size() * sizeof(shader_types::PrimitiveData);
+            mTextureBuffer = NS::TransferPtr(
+                mDevice->newBuffer(textureDataSize, MTL::ResourceStorageModeManaged));
+            std::memcpy(mTextureBuffer->contents(), textureData.data(), textureDataSize);
+            mTextureBuffer->didModifyRange(NS::Range::Make(0, mTextureBuffer->length()));
+            mPrimitiveBuffer = NS::TransferPtr(
+                mDevice->newBuffer(primitiveDataSize, MTL::ResourceStorageModeManaged));
+            std::memcpy(mPrimitiveBuffer->contents(), primitiveData.data(), primitiveDataSize);
+            mPrimitiveBuffer->didModifyRange(NS::Range::Make(0, mPrimitiveBuffer->length()));
+            mPrimitiveBufferOffsets = NS::TransferPtr(mDevice->newBuffer(
+                primitiveDataOffsets.size() * sizeof(std::uint32_t),
+                MTL::ResourceStorageModeManaged));
+            std::memcpy(
+                mPrimitiveBufferOffsets->contents(),
+                primitiveDataOffsets.data(),
+                primitiveDataOffsets.size() * sizeof(std::uint32_t));
+            mPrimitiveBufferOffsets->didModifyRange(
+                NS::Range::Make(0, mPrimitiveBufferOffsets->length()));
         }
 
         {
@@ -320,6 +473,9 @@ public:
         renderEncoder->setVertexBuffer(mVertexPositionsBuffer.get(), 0, 0);
         renderEncoder->setFragmentBuffer(mUniformsBuffer.get(), 0, 0);
         renderEncoder->setFragmentAccelerationStructure(mAccelerationStructure.get(), 1);
+        renderEncoder->setFragmentBuffer(mTextureBuffer.get(), 0, 2);
+        renderEncoder->setFragmentBuffer(mPrimitiveBuffer.get(), 0, 3);
+        renderEncoder->setFragmentBuffer(mPrimitiveBufferOffsets.get(), 0, 4);
         renderEncoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(6));
 
         renderEncoder->endEncoding();
@@ -335,6 +491,9 @@ private:
     NS::SharedPtr<MTL::RenderPipelineState>   mPSO;
     NS::SharedPtr<MTL::Buffer>                mVertexPositionsBuffer;
     NS::SharedPtr<MTL::Buffer>                mUniformsBuffer;
+    NS::SharedPtr<MTL::Buffer>                mTextureBuffer;
+    NS::SharedPtr<MTL::Buffer>                mPrimitiveBuffer;
+    NS::SharedPtr<MTL::Buffer>                mPrimitiveBufferOffsets;
     NS::SharedPtr<MTL::AccelerationStructure> mAccelerationStructure;
 };
 } // namespace nlrs
