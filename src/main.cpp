@@ -71,6 +71,9 @@ try
     nlrs::FlyCameraController cameraController;
     cameraController.lookAt(glm::vec3(0.0f, 0.0f, 0.0f));
 
+    int currentWidth = WIDTH;
+    int currentHeight = HEIGHT;
+
     glfwMakeContextCurrent(window);
     while (!glfwWindowShouldClose(window))
     {
@@ -79,6 +82,19 @@ try
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
+        }
+
+        {
+            // Handle resize
+            int width, height;
+            glfwGetFramebufferSize(window, &width, &height);
+            if (width != currentWidth || height != currentHeight)
+            {
+                currentWidth = width;
+                currentHeight = height;
+                layer->setDrawableSize(
+                    CGSizeMake(static_cast<float>(width), static_cast<float>(height)));
+            }
         }
 
         cameraController.update(window, 0.016f);
