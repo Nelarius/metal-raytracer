@@ -15,6 +15,8 @@ namespace nlrs
 {
 namespace
 {
+constexpr NS::UInteger SAMPLE_BUFFER_COUNT = 2;
+
 std::tuple<
     std::vector<Texture::BgraPixel>,
     std::vector<shader_types::PrimitiveData>,
@@ -86,6 +88,7 @@ Renderer::Renderer(NS::SharedPtr<MTL::Device> device, const GltfModel& model)
       mCommandQueue(NS::TransferPtr(mDevice->newCommandQueue())),
       mHeap(),
       mPSO(),
+      mTimerSampleBuffer(),
       mVertexPositionsBuffer(),
       mUniformsBuffer(),
       mTextureBuffer(),
@@ -249,6 +252,57 @@ Renderer::Renderer(NS::SharedPtr<MTL::Device> device, const GltfModel& model)
     }
 
     {
+        const MTL::CounterSet* counterSetTimestamp = nullptr;
+        const NS::Array&       counterSets = *mDevice->counterSets();
+        for (NS::UInteger i = 0; i < counterSets.count(); ++i)
+        {
+            const MTL::CounterSet* const counterSet =
+                static_cast<const MTL::CounterSet*>(counterSets.object(i));
+
+            if (counterSet->name()->isEqualToString(MTL::CommonCounterSetTimestamp))
+            {
+                counterSetTimestamp = counterSet;
+                break;
+            }
+        }
+        if (counterSetTimestamp == nullptr)
+        {
+            throw std::runtime_error("Timestamp counter not supported by device");
+        }
+
+        const MTL::Counter* counterTimestamp = nullptr;
+        const NS::Array&    counters = *counterSetTimestamp->counters();
+        for (NS::UInteger i = 0; i < counters.count(); ++i)
+        {
+            const MTL::Counter* const counter =
+                static_cast<const MTL::Counter*>(counters.object(i));
+            if (counter->name()->isEqualToString(MTL::CommonCounterTimestamp))
+            {
+                counterTimestamp = counter;
+                break;
+            }
+        }
+        if (counterTimestamp == nullptr)
+        {
+            throw std::runtime_error("Timestamp counter set does not contain timestamp counter");
+        }
+
+        auto counterSampleBufferDesc =
+            NS::TransferPtr(MTL::CounterSampleBufferDescriptor::alloc()->init());
+        counterSampleBufferDesc->setCounterSet(counterSetTimestamp);
+        counterSampleBufferDesc->setStorageMode(MTL::StorageModeShared);
+        counterSampleBufferDesc->setSampleCount(SAMPLE_BUFFER_COUNT);
+
+        NS::Error* error = nullptr;
+        mTimerSampleBuffer =
+            NS::TransferPtr(mDevice->newCounterSampleBuffer(counterSampleBufferDesc.get(), &error));
+        if (error != nullptr)
+        {
+            throw std::runtime_error(error->localizedDescription()->utf8String());
+        }
+    }
+
+    {
         constexpr std::size_t NUM_VERTICES = 6;
 
         simd::float2 quadPositions[NUM_VERTICES] = {
@@ -399,8 +453,19 @@ void Renderer::draw(CA::MetalDrawable* drawable, const Camera& camera)
     colorAttachmentDesc->setLoadAction(MTL::LoadActionClear);
     colorAttachmentDesc->setClearColor(MTL::ClearColor::Make(0.2f, 0.25f, 0.3f, 1.0));
     colorAttachmentDesc->setStoreAction(MTL::StoreActionStore);
+    MTL::RenderPassSampleBufferAttachmentDescriptor* const sampleBufferDesc =
+        renderPassDesc->sampleBufferAttachments()->object(0);
+    sampleBufferDesc->setSampleBuffer(mTimerSampleBuffer.get());
+    sampleBufferDesc->setStartOfFragmentSampleIndex(0);
+    sampleBufferDesc->setEndOfFragmentSampleIndex(1);
 
-    MTL::CommandBuffer* const        commandBuffer = mCommandQueue->commandBuffer();
+    MTL::CommandBuffer* const commandBuffer = mCommandQueue->commandBuffer();
+    MTL::Timestamp            cpuStartTime, gpuStartTime;
+    MTL::Timestamp            cpuEndTime, gpuEndTime;
+    mDevice->sampleTimestamps(&cpuStartTime, &gpuStartTime);
+    commandBuffer->addCompletedHandler([this, &cpuEndTime, &gpuEndTime](MTL::CommandBuffer*) {
+        mDevice->sampleTimestamps(&cpuEndTime, &gpuEndTime);
+    });
     MTL::RenderCommandEncoder* const renderEncoder =
         commandBuffer->renderCommandEncoder(renderPassDesc);
 
@@ -417,5 +482,27 @@ void Renderer::draw(CA::MetalDrawable* drawable, const Camera& camera)
     commandBuffer->presentDrawable(drawable);
     commandBuffer->commit();
     commandBuffer->waitUntilCompleted();
+    NS::Data* const resolvedData =
+        mTimerSampleBuffer->resolveCounterRange(NS::Range::Make(0, SAMPLE_BUFFER_COUNT));
+    const MTL::Timestamp* const timestamps =
+        static_cast<const MTL::Timestamp*>(resolvedData->mutableBytes());
+
+    const auto absoluteTimeInUs = [gpuStartTime, gpuEndTime, cpuStartTime, cpuEndTime](
+                                      MTL::Timestamp gpuTimestamp) -> double {
+        // See:
+        // https://developer.apple.com/documentation/metal/gpu_counters_and_counter_sample_buffers/converting_gpu_timestamps_into_cpu_time?language=objc
+        const double gpuReferenceTimespan = static_cast<double>(gpuEndTime - gpuStartTime);
+        const double cpuReferenceTimespan = static_cast<double>(cpuEndTime - cpuStartTime);
+        const double normalizedGpuTime =
+            static_cast<double>(gpuTimestamp - gpuStartTime) / gpuReferenceTimespan;
+
+        // Convert GPU time to CPU time
+        const double nanoseconds =
+            normalizedGpuTime * cpuReferenceTimespan + static_cast<double>(cpuStartTime);
+        return nanoseconds / 1e3;
+    };
+    const double fragmentStartUs = absoluteTimeInUs(timestamps[0]);
+    const double fragmentEndUs = absoluteTimeInUs(timestamps[1]);
+    std::printf("Fragment time: %.2f ms\n", 0.001 * (fragmentEndUs - fragmentStartUs));
 }
 } // namespace nlrs

@@ -28,6 +28,7 @@ private:
     NS::SharedPtr<MTL::CommandQueue>          mCommandQueue;
     NS::SharedPtr<MTL::Heap>                  mHeap;
     NS::SharedPtr<MTL::RenderPipelineState>   mPSO;
+    NS::SharedPtr<MTL::CounterSampleBuffer>   mTimerSampleBuffer;
     NS::SharedPtr<MTL::Buffer>                mVertexPositionsBuffer;
     NS::SharedPtr<MTL::Buffer>                mUniformsBuffer;
     NS::SharedPtr<MTL::Buffer>                mTextureBuffer;
