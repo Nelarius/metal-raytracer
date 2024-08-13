@@ -29,6 +29,7 @@ target_link_libraries(metal-raytracer
     fmt
     glfw
     glm::glm
+    imgui
     metal-cpp
     stb)
 target_link_libraries(metal-raytracer

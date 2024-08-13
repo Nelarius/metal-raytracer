@@ -15,12 +15,14 @@ public:
     UiRenderer(UiRenderer&&) noexcept = default;
     UiRenderer& operator=(UiRenderer&&) noexcept = default;
 
+    void newFrame();
     void draw(const CA::MetalDrawable* target, const MTL::Texture* source);
 
 private:
-    NS::SharedPtr<MTL::Device>              mDevice;
-    NS::SharedPtr<MTL::CommandQueue>        mCommandQueue;
-    NS::SharedPtr<MTL::RenderPipelineState> mPso;
-    NS::SharedPtr<MTL::Buffer>              mVertexPositionsBuffer;
+    NS::SharedPtr<MTL::Device>               mDevice;
+    NS::SharedPtr<MTL::CommandQueue>         mCommandQueue;
+    NS::SharedPtr<MTL::RenderPipelineState>  mPso;
+    NS::SharedPtr<MTL::Buffer>               mVertexPositionsBuffer;
+    NS::SharedPtr<MTL::RenderPassDescriptor> mRenderPassDescriptor;
 };
 } // namespace nlrs

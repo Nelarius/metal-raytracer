@@ -8,6 +8,10 @@
 #include <fmt/core.h>
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#define IMGUI_IMPL_METAL_CPP
+#include <imgui_impl_metal.h>
 
 #include "cocoa_bridge.hpp"
 #include "fly_camera_controller.hpp"
@@ -67,6 +71,17 @@ try
     layer->setPixelFormat(nlrs::COLOR_ATTACHMENT_FORMAT);
     nlrs::addLayerToGlfwWindow(window, layer.get());
 
+    IMGUI_CHECKVERSION();
+    ImGuiContext* const imguiContext = ImGui::CreateContext();
+    if (imguiContext == nullptr)
+    {
+        throw std::runtime_error("ImGui::CreateContext failed");
+    }
+    ImGui::SetCurrentContext(imguiContext);
+    ImGui::StyleColorsDark();
+    ImGui_ImplGlfw_InitForOther(window, true);
+    ImGui_ImplMetal_Init(device.get());
+
     nlrs::GltfModel           model(gltfPath);
     nlrs::Renderer            renderer(device, model);
     nlrs::UiRenderer          uiRenderer(device);
@@ -99,7 +114,20 @@ try
             }
         }
 
-        cameraController.update(window, 0.016f);
+        uiRenderer.newFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
+        {
+            ImGui::Begin("metal-raytracer");
+            ImGui::Text("Hello, imgui!");
+            ImGui::End();
+        }
+
+        if (!ImGui::GetIO().WantCaptureMouse)
+        {
+            cameraController.update(window, 1.0f / 60.0f);
+        }
 
         {
             auto                     pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
@@ -112,6 +140,9 @@ try
         }
     }
 
+    ImGui_ImplMetal_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext(imguiContext);
     glfwDestroyWindow(window);
     glfwTerminate();
 

@@ -3,6 +3,8 @@
 
 #include <fmt/core.h>
 #include <Foundation/Foundation.hpp>
+#define IMGUI_IMPL_METAL_CPP
+#include <imgui_impl_metal.h>
 #include <simd/simd.h>
 
 #include <exception>
@@ -14,7 +16,8 @@ UiRenderer::UiRenderer(NS::SharedPtr<MTL::Device> device)
     : mDevice{std::move(device)},
       mCommandQueue{NS::TransferPtr(mDevice->newCommandQueue())},
       mPso{},
-      mVertexPositionsBuffer{}
+      mVertexPositionsBuffer{},
+      mRenderPassDescriptor{}
 {
     if (!mDevice)
     {
@@ -107,27 +110,33 @@ UiRenderer::UiRenderer(NS::SharedPtr<MTL::Device> device)
         mVertexPositionsBuffer->didModifyRange(
             NS::Range::Make(0, mVertexPositionsBuffer->length()));
     }
-}
 
-void UiRenderer::draw(const CA::MetalDrawable* const drawable, const MTL::Texture* const source)
-{
-    // TODO: descriptor could be retained in order to use with imgui
-    MTL::RenderPassDescriptor* const renderPassDesc = MTL::RenderPassDescriptor::alloc()->init();
-    renderPassDesc->autorelease();
+    mRenderPassDescriptor = NS::TransferPtr(MTL::RenderPassDescriptor::alloc()->init());
     MTL::RenderPassColorAttachmentDescriptor* const colorAttachmentDesc =
-        renderPassDesc->colorAttachments()->object(0);
-    colorAttachmentDesc->setTexture(drawable->texture());
+        mRenderPassDescriptor->colorAttachments()->object(0);
     colorAttachmentDesc->setLoadAction(MTL::LoadActionClear);
     colorAttachmentDesc->setClearColor(MTL::ClearColor::Make(0.2f, 0.25f, 0.3f, 1.0));
     colorAttachmentDesc->setStoreAction(MTL::StoreActionStore);
+}
+
+void UiRenderer::newFrame() { ImGui_ImplMetal_NewFrame(mRenderPassDescriptor.get()); }
+
+void UiRenderer::draw(const CA::MetalDrawable* const drawable, const MTL::Texture* const source)
+{
+    MTL::RenderPassColorAttachmentDescriptor* const colorAttachmentDesc =
+        mRenderPassDescriptor->colorAttachments()->object(0);
+    colorAttachmentDesc->setTexture(drawable->texture());
 
     MTL::CommandBuffer* const        commandBuffer = mCommandQueue->commandBuffer();
-    MTL::RenderCommandEncoder* const encoder = commandBuffer->renderCommandEncoder(renderPassDesc);
+    MTL::RenderCommandEncoder* const encoder =
+        commandBuffer->renderCommandEncoder(mRenderPassDescriptor.get());
 
     encoder->setRenderPipelineState(mPso.get());
     encoder->setVertexBuffer(mVertexPositionsBuffer.get(), 0, 0);
     encoder->setFragmentTexture(source, 0);
     encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(6));
+    ImGui::Render();
+    ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), commandBuffer, encoder);
     encoder->endEncoding();
 
     commandBuffer->presentDrawable(drawable);
