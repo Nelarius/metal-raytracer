@@ -41,7 +41,6 @@ try
     fs::path gltfPath = argv[1];
     if (!fs::exists(gltfPath))
     {
-        // std::printf("Error: %s does not exist\n", gltfPath.c_str());
         fmt::print(stderr, "File {} does not exist\n", gltfPath.string());
         return 1;
     }
