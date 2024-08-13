@@ -18,16 +18,16 @@ public:
     Renderer(Renderer&&) noexcept = default;
     Renderer& operator=(Renderer&&) noexcept = default;
 
-    void draw(CA::MetalDrawable* drawable, const Camera& camera);
+    void draw(const Camera& camera, std::uint32_t width, std::uint32_t height);
 
-    static constexpr MTL::PixelFormat COLOR_ATTACHMENT_FORMAT =
-        MTL::PixelFormat::PixelFormatBGRA8Unorm_sRGB;
+    inline const MTL::Texture* texture() const { return mTexture.get(); }
 
 private:
     NS::SharedPtr<MTL::Device>                mDevice;
     NS::SharedPtr<MTL::CommandQueue>          mCommandQueue;
+    NS::SharedPtr<MTL::Texture>               mTexture;
     NS::SharedPtr<MTL::Heap>                  mHeap;
-    NS::SharedPtr<MTL::RenderPipelineState>   mPSO;
+    NS::SharedPtr<MTL::RenderPipelineState>   mPso;
     NS::SharedPtr<MTL::CounterSampleBuffer>   mTimerSampleBuffer;
     NS::SharedPtr<MTL::Buffer>                mVertexPositionsBuffer;
     NS::SharedPtr<MTL::Buffer>                mUniformsBuffer;

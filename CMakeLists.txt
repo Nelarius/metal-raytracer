@@ -17,6 +17,7 @@ set(RENDERER_SOURCE
     renderer.cpp
     stb_image.c
     texture.cpp
+    ui_renderer.cpp
 )
 list(TRANSFORM RENDERER_SOURCE PREPEND ${CMAKE_CURRENT_LIST_DIR}/src/)
 

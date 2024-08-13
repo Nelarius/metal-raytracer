@@ -2,12 +2,15 @@
 #include "gltf_model.hpp"
 #include "renderer.hpp"
 #include "shader_types.hpp"
+#include "render_config.hpp"
 #include "texture.hpp"
 
 #include <glm/glm.hpp>
 
 #include <cstdint>
 #include <cstring>
+#include <exception>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -86,8 +89,9 @@ buildPrimitiveData(const GltfModel& model)
 Renderer::Renderer(NS::SharedPtr<MTL::Device> device, const GltfModel& model)
     : mDevice(std::move(device)),
       mCommandQueue(NS::TransferPtr(mDevice->newCommandQueue())),
+      mTexture(),
       mHeap(),
-      mPSO(),
+      mPso(),
       mTimerSampleBuffer(),
       mVertexPositionsBuffer(),
       mUniformsBuffer(),
@@ -128,7 +132,7 @@ Renderer::Renderer(NS::SharedPtr<MTL::Device> device, const GltfModel& model)
     {
         using NS::StringEncoding::UTF8StringEncoding;
 
-        const char* shaderSrc = R"(
+        const char* const shaderSrc = R"(
                 #include <metal_stdlib>
                 #include <metal_geometric>
                 #include <metal_raytracing>
@@ -244,8 +248,8 @@ Renderer::Renderer(NS::SharedPtr<MTL::Device> device, const GltfModel& model)
         pipelineDesc->setFragmentFunction(fragmentFn.get());
         pipelineDesc->colorAttachments()->object(0)->setPixelFormat(COLOR_ATTACHMENT_FORMAT);
 
-        mPSO = NS::TransferPtr(mDevice->newRenderPipelineState(pipelineDesc.get(), &error));
-        if (!mPSO)
+        mPso = NS::TransferPtr(mDevice->newRenderPipelineState(pipelineDesc.get(), &error));
+        if (!mPso)
         {
             throw std::runtime_error(error->localizedDescription()->utf8String());
         }
@@ -428,7 +432,7 @@ Renderer::Renderer(NS::SharedPtr<MTL::Device> device, const GltfModel& model)
     }
 }
 
-void Renderer::draw(CA::MetalDrawable* drawable, const Camera& camera)
+void Renderer::draw(const Camera& camera, const std::uint32_t width, const std::uint32_t height)
 {
     {
         auto* uniforms = reinterpret_cast<shader_types::Uniforms*>(mUniformsBuffer->contents());
@@ -443,13 +447,23 @@ void Renderer::draw(CA::MetalDrawable* drawable, const Camera& camera)
         mUniformsBuffer->didModifyRange(NS::Range::Make(0, sizeof(shader_types::Uniforms)));
     }
 
+    if (!mTexture || mTexture->width() != width || mTexture->height() != height)
+    {
+        auto textureDesc = MTL::TextureDescriptor::texture2DDescriptor(
+            MTL::PixelFormatBGRA8Unorm, width, height, false);
+        textureDesc->setPixelFormat(COLOR_ATTACHMENT_FORMAT);
+        textureDesc->setStorageMode(MTL::StorageModePrivate);
+        textureDesc->setUsage(MTL::TextureUsageShaderRead | MTL::TextureUsageRenderTarget);
+        mTexture = NS::TransferPtr(mDevice->newTexture(textureDesc));
+    }
+
     MTL::RenderPassDescriptor* const renderPassDesc = MTL::RenderPassDescriptor::alloc()->init();
     // Objects created with new, alloc, Create, copy, mutableCopy should be managed either by
     // NS::SharedPtr, or using an autoreleasepool.
     renderPassDesc->autorelease();
     MTL::RenderPassColorAttachmentDescriptor* const colorAttachmentDesc =
         renderPassDesc->colorAttachments()->object(0);
-    colorAttachmentDesc->setTexture(drawable->texture());
+    colorAttachmentDesc->setTexture(mTexture.get());
     colorAttachmentDesc->setLoadAction(MTL::LoadActionClear);
     colorAttachmentDesc->setClearColor(MTL::ClearColor::Make(0.2f, 0.25f, 0.3f, 1.0));
     colorAttachmentDesc->setStoreAction(MTL::StoreActionStore);
@@ -469,7 +483,7 @@ void Renderer::draw(CA::MetalDrawable* drawable, const Camera& camera)
     MTL::RenderCommandEncoder* const renderEncoder =
         commandBuffer->renderCommandEncoder(renderPassDesc);
 
-    renderEncoder->setRenderPipelineState(mPSO.get());
+    renderEncoder->setRenderPipelineState(mPso.get());
     renderEncoder->setVertexBuffer(mVertexPositionsBuffer.get(), 0, 0);
     renderEncoder->setFragmentBuffer(mUniformsBuffer.get(), 0, 0);
     renderEncoder->setFragmentAccelerationStructure(mAccelerationStructure.get(), 1);
@@ -477,9 +491,8 @@ void Renderer::draw(CA::MetalDrawable* drawable, const Camera& camera)
     renderEncoder->setFragmentBuffer(mPrimitiveBuffer.get(), 0, 3);
     renderEncoder->setFragmentBuffer(mPrimitiveBufferOffsets.get(), 0, 4);
     renderEncoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(6));
-
     renderEncoder->endEncoding();
-    commandBuffer->presentDrawable(drawable);
+
     commandBuffer->commit();
     commandBuffer->waitUntilCompleted();
     NS::Data* const resolvedData =

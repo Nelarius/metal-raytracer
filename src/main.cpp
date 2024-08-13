@@ -12,7 +12,9 @@
 #include "cocoa_bridge.hpp"
 #include "fly_camera_controller.hpp"
 #include "gltf_model.hpp"
+#include "render_config.hpp"
 #include "renderer.hpp"
+#include "ui_renderer.hpp"
 
 #include <cstddef>
 #include <cstdio>
@@ -62,11 +64,12 @@ try
     layer->setDevice(device.get());
     layer->setDrawableSize(CGSizeMake(static_cast<float>(WIDTH), static_cast<float>(HEIGHT)));
     layer->setFramebufferOnly(true);
-    layer->setPixelFormat(nlrs::Renderer::COLOR_ATTACHMENT_FORMAT);
+    layer->setPixelFormat(nlrs::COLOR_ATTACHMENT_FORMAT);
     nlrs::addLayerToGlfwWindow(window, layer.get());
 
     nlrs::GltfModel           model(gltfPath);
     nlrs::Renderer            renderer(device, model);
+    nlrs::UiRenderer          uiRenderer(device);
     nlrs::FlyCameraController cameraController;
     cameraController.lookAt(glm::vec3(0.0f, 0.0f, 0.0f));
 
@@ -101,7 +104,11 @@ try
         {
             auto                     pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
             CA::MetalDrawable* const nextDrawable = layer->nextDrawable();
-            renderer.draw(nextDrawable, cameraController.getCamera());
+            renderer.draw(
+                cameraController.getCamera(),
+                static_cast<std::uint32_t>(currentWidth),
+                static_cast<std::uint32_t>(currentHeight));
+            uiRenderer.draw(nextDrawable, renderer.texture());
         }
     }
 
