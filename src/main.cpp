@@ -20,9 +20,11 @@
 #include "renderer.hpp"
 #include "ui_renderer.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <exception>
+#include <numeric>
 #include <filesystem>
 #include <stdexcept>
 #include <string_view>
@@ -119,8 +121,41 @@ try
         ImGui::NewFrame();
 
         {
-            ImGui::Begin("metal-raytracer");
-            ImGui::Text("Hello, imgui!");
+            struct RayTracingStats
+            {
+                float averageMillis;
+                float p50Millis;
+                float p75Millis;
+            };
+            auto       stats = RayTracingStats{0.f, 0.f, 0.f};
+            const auto timings = renderer.rayTracingTimings();
+            if (!timings.empty())
+            {
+                std::vector<float> sortedTimings(timings.begin(), timings.end());
+                std::sort(sortedTimings.begin(), sortedTimings.end());
+                stats.averageMillis =
+                    std::accumulate(sortedTimings.begin(), sortedTimings.end(), 0.0f) /
+                    static_cast<float>(sortedTimings.size());
+                stats.p50Millis = sortedTimings[sortedTimings.size() / 2];
+                stats.p75Millis = sortedTimings[sortedTimings.size() * 3 / 4];
+            }
+
+            ImGui::Begin("Rendering stats");
+            ImGui::PlotHistogram(
+                "Raytracing times (ms)",
+                timings.data(),
+                static_cast<int>(timings.size()),
+                0,
+                nullptr,
+                0.0f,
+                30.0f,
+                ImVec2(0, 40));
+            ImGui::Text(
+                "Average: %.2f ms (%.2f FPS)", stats.averageMillis, 1000.0f / stats.averageMillis);
+            ImGui::Text(
+                "50th percentile: %.2f ms (%.2f FPS)", stats.p50Millis, 1000.0f / stats.p50Millis);
+            ImGui::Text(
+                "75th percentile: %.2f ms (%.2f FPS)", stats.p75Millis, 1000.0f / stats.p75Millis);
             ImGui::End();
         }
 

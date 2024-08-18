@@ -3,6 +3,8 @@
 #include <Metal/Metal.hpp>
 #include <QuartzCore/CAMetalDrawable.hpp>
 
+#include <vector>
+
 namespace nlrs
 {
 struct Camera;
@@ -20,7 +22,8 @@ public:
 
     void draw(const Camera& camera, std::uint32_t width, std::uint32_t height);
 
-    inline const MTL::Texture* texture() const { return mTexture.get(); }
+    inline const MTL::Texture*    texture() const { return mTexture.get(); }
+    inline std::span<const float> rayTracingTimings() const { return mFragmentMillis; }
 
 private:
     NS::SharedPtr<MTL::Device>                mDevice;
@@ -35,5 +38,6 @@ private:
     NS::SharedPtr<MTL::Buffer>                mPrimitiveBuffer;
     NS::SharedPtr<MTL::Buffer>                mPrimitiveBufferOffsets;
     NS::SharedPtr<MTL::AccelerationStructure> mAccelerationStructure;
+    std::vector<float>                        mFragmentMillis;
 };
 } // namespace nlrs

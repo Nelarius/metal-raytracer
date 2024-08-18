@@ -12,7 +12,6 @@
 #include <exception>
 #include <stdexcept>
 #include <utility>
-#include <vector>
 
 namespace nlrs
 {
@@ -98,7 +97,8 @@ Renderer::Renderer(NS::SharedPtr<MTL::Device> device, const GltfModel& model)
       mTextureBuffer(),
       mPrimitiveBuffer(),
       mPrimitiveBufferOffsets(),
-      mAccelerationStructure()
+      mAccelerationStructure(),
+      mFragmentMillis()
 {
     if (!mDevice)
     {
@@ -497,6 +497,8 @@ void Renderer::draw(const Camera& camera, const std::uint32_t width, const std::
     commandBuffer->waitUntilCompleted();
     NS::Data* const resolvedData =
         mTimerSampleBuffer->resolveCounterRange(NS::Range::Make(0, SAMPLE_BUFFER_COUNT));
+    // TODO: Could this be done in the completion handler? Then I woudln't have to wait until
+    // completion and could utilize multiple in-flight frames.
     const MTL::Timestamp* const timestamps =
         static_cast<const MTL::Timestamp*>(resolvedData->mutableBytes());
 
@@ -516,6 +518,11 @@ void Renderer::draw(const Camera& camera, const std::uint32_t width, const std::
     };
     const double fragmentStartUs = absoluteTimeInUs(timestamps[0]);
     const double fragmentEndUs = absoluteTimeInUs(timestamps[1]);
-    std::printf("Fragment time: %.2f ms\n", 0.001 * (fragmentEndUs - fragmentStartUs));
+    const float  fragmentTimeMs = static_cast<float>(0.001 * (fragmentEndUs - fragmentStartUs));
+    mFragmentMillis.push_back(fragmentTimeMs);
+    if (mFragmentMillis.size() > 100)
+    {
+        mFragmentMillis.erase(mFragmentMillis.begin());
+    }
 }
 } // namespace nlrs
