@@ -13,6 +13,7 @@
 #define IMGUI_IMPL_METAL_CPP
 #include <imgui_impl_metal.h>
 
+#include "assert.hpp"
 #include "cocoa_bridge.hpp"
 #include "fly_camera_controller.hpp"
 #include "gltf_model.hpp"
@@ -84,8 +85,42 @@ try
     ImGui_ImplGlfw_InitForOther(window, true);
     ImGui_ImplMetal_Init(device.get());
 
-    nlrs::GltfModel           model(gltfPath);
-    nlrs::Renderer            renderer(device, model);
+    nlrs::Renderer renderer = [&gltfPath, &device]() -> nlrs::Renderer {
+        nlrs::GltfModel            model(gltfPath);
+        std::vector<glm::vec3>     positions;
+        std::vector<glm::vec2>     texCoords;
+        std::vector<std::uint32_t> indices;
+        std::vector<std::size_t>   baseColorTextureIndices;
+
+        std::uint32_t indexOffset = 0;
+        for (const auto& mesh : model.meshes)
+        {
+            NLRS_ASSERT(mesh.positions.size() == mesh.texCoords.size());
+            positions.reserve(positions.size() + mesh.positions.size());
+            positions.insert(positions.end(), mesh.positions.begin(), mesh.positions.end());
+            texCoords.reserve(texCoords.size() + mesh.texCoords.size());
+            texCoords.insert(texCoords.end(), mesh.texCoords.begin(), mesh.texCoords.end());
+            indices.reserve(indices.size() + mesh.indices.size());
+            for (std::size_t idx = 0; idx < mesh.indices.size(); idx += 3)
+            {
+                indices.push_back(mesh.indices[idx] + indexOffset);
+                indices.push_back(mesh.indices[idx + 1] + indexOffset);
+                indices.push_back(mesh.indices[idx + 2] + indexOffset);
+                baseColorTextureIndices.push_back(mesh.baseColorTextureIndex);
+            }
+            indexOffset += static_cast<std::uint32_t>(mesh.positions.size());
+        }
+
+        return nlrs::Renderer{
+            device,
+            nlrs::RendererDescriptor{
+                .positions = {positions},
+                .texCoords = {texCoords},
+                .indices = {indices},
+                .baseColorTextureIndices = {baseColorTextureIndices},
+                .baseColorTextures = {model.baseColorTextures}}};
+    }();
+
     nlrs::UiRenderer          uiRenderer(device);
     nlrs::FlyCameraController cameraController;
     cameraController.lookAt(glm::vec3(0.0f, 0.0f, 0.0f));

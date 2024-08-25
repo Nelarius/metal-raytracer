@@ -3,6 +3,7 @@
 #include <Metal/Metal.hpp>
 #include <QuartzCore/CAMetalDrawable.hpp>
 
+#include <span>
 #include <vector>
 
 namespace nlrs
@@ -10,10 +11,19 @@ namespace nlrs
 struct Camera;
 struct GltfModel;
 
+struct RendererDescriptor
+{
+    std::span<const glm::vec3>     positions;
+    std::span<const glm::vec2>     texCoords;
+    std::span<const std::uint32_t> indices;
+    std::span<const std::size_t>   baseColorTextureIndices;
+    std::span<const Texture>       baseColorTextures;
+};
+
 class Renderer
 {
 public:
-    Renderer(NS::SharedPtr<MTL::Device>, const GltfModel&);
+    Renderer(NS::SharedPtr<MTL::Device>, const RendererDescriptor&);
 
     Renderer(const Renderer&) = delete;
     Renderer& operator=(const Renderer&) = delete;
@@ -36,7 +46,6 @@ private:
     NS::SharedPtr<MTL::Buffer>                mUniformsBuffer;
     NS::SharedPtr<MTL::Buffer>                mTextureBuffer;
     NS::SharedPtr<MTL::Buffer>                mPrimitiveBuffer;
-    NS::SharedPtr<MTL::Buffer>                mPrimitiveBufferOffsets;
     NS::SharedPtr<MTL::AccelerationStructure> mAccelerationStructure;
     std::vector<float>                        mFragmentMillis;
 };

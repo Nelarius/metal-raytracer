@@ -19,24 +19,15 @@ namespace
 {
 constexpr NS::UInteger SAMPLE_BUFFER_COUNT = 2;
 
-std::tuple<
-    std::vector<Texture::BgraPixel>,
-    std::vector<shader_types::PrimitiveData>,
-    std::vector<std::uint32_t>>
-buildPrimitiveData(const GltfModel& model)
+std::tuple<std::vector<Texture::BgraPixel>, std::vector<shader_types::PrimitiveData>>
+buildPrimitiveData(const RendererDescriptor& rendererDesc)
 {
-    std::vector<std::uint32_t> primitiveDataOffsets;
-    primitiveDataOffsets.reserve(model.meshes.size());
-
-    std::vector<shader_types::PrimitiveData> primitiveData;
-    primitiveData.reserve(1 << 10);
-
     std::vector<Texture::BgraPixel> textureData;
     textureData.reserve(1 << 20);
     // map base color textures to texture descriptors
     std::vector<shader_types::TextureDescriptor> textureDescriptors;
-    textureDescriptors.reserve(model.baseColorTextures.size());
-    for (const auto& texture : model.baseColorTextures)
+    textureDescriptors.reserve(rendererDesc.baseColorTextures.size());
+    for (const Texture& texture : rendererDesc.baseColorTextures)
     {
         const auto        dimensions = texture.dimensions();
         const auto        pixels = texture.pixels();
@@ -53,39 +44,34 @@ buildPrimitiveData(const GltfModel& model)
         });
     }
 
-    for (const auto& mesh : model.meshes)
+    std::vector<shader_types::PrimitiveData> primitiveData;
+
+    for (std::size_t idx = 0; idx < rendererDesc.indices.size(); idx += 3)
     {
-        const std::uint32_t primitiveIdxOffset = static_cast<std::uint32_t>(primitiveData.size());
-        primitiveDataOffsets.push_back(primitiveIdxOffset);
+        const std::uint32_t i0 = rendererDesc.indices[idx + 0];
+        const std::uint32_t i1 = rendererDesc.indices[idx + 1];
+        const std::uint32_t i2 = rendererDesc.indices[idx + 2];
 
-        const shader_types::TextureDescriptor textureDescriptor =
-            textureDescriptors[mesh.baseColorTextureIndex];
+        const glm::vec2 uv0 = rendererDesc.texCoords[i0];
+        const glm::vec2 uv1 = rendererDesc.texCoords[i1];
+        const glm::vec2 uv2 = rendererDesc.texCoords[i2];
 
-        for (std::size_t i = 0; i < mesh.indices.size(); i += 3)
-        {
-            const std::uint32_t i0 = mesh.indices[i + 0];
-            const std::uint32_t i1 = mesh.indices[i + 1];
-            const std::uint32_t i2 = mesh.indices[i + 2];
+        const auto textureDescriptor =
+            textureDescriptors[rendererDesc.baseColorTextureIndices[idx / 3]];
 
-            const glm::vec2 uv0 = mesh.texCoords[i0];
-            const glm::vec2 uv1 = mesh.texCoords[i1];
-            const glm::vec2 uv2 = mesh.texCoords[i2];
-
-            primitiveData.push_back({
-                .uv0 = {uv0.x, uv0.y},
-                .uv1 = {uv1.x, uv1.y},
-                .uv2 = {uv2.x, uv2.y},
-                .textureDescriptor = textureDescriptor,
-            });
-        }
+        primitiveData.push_back({
+            .uv0 = {uv0.x, uv0.y},
+            .uv1 = {uv1.x, uv1.y},
+            .uv2 = {uv2.x, uv2.y},
+            .textureDescriptor = textureDescriptor,
+        });
     }
 
-    return std::make_tuple(
-        std::move(textureData), std::move(primitiveData), std::move(primitiveDataOffsets));
+    return std::make_tuple(std::move(textureData), std::move(primitiveData));
 }
 } // namespace
 
-Renderer::Renderer(NS::SharedPtr<MTL::Device> device, const GltfModel& model)
+Renderer::Renderer(NS::SharedPtr<MTL::Device> device, const RendererDescriptor& rendererDesc)
     : mDevice(std::move(device)),
       mCommandQueue(NS::TransferPtr(mDevice->newCommandQueue())),
       mTexture(),
@@ -96,7 +82,6 @@ Renderer::Renderer(NS::SharedPtr<MTL::Device> device, const GltfModel& model)
       mUniformsBuffer(),
       mTextureBuffer(),
       mPrimitiveBuffer(),
-      mPrimitiveBufferOffsets(),
       mAccelerationStructure(),
       mFragmentMillis()
 {
@@ -207,8 +192,7 @@ Renderer::Renderer(NS::SharedPtr<MTL::Device> device, const GltfModel& model)
                                     constant const Uniforms& uniforms [[buffer(0)]],
                                     raytracing::acceleration_structure<> accelerationStructure [[buffer(1)]],
                                     device const uint32_t* textureData [[buffer(2)]],
-                                    device const PrimitiveData* primitiveData [[buffer(3)]],
-                                    device const uint32_t* primitiveDataOffsets [[buffer(4)]] )
+                                    device const PrimitiveData* primitiveData [[buffer(3)]] )
                 {
                     half4 color = half4(0.0, 0.0, 0.0, 1.0);
                     raytracing::intersector<raytracing::triangle_data> intersector;
@@ -216,13 +200,11 @@ Renderer::Renderer(NS::SharedPtr<MTL::Device> device, const GltfModel& model)
                     typename raytracing::intersector<raytracing::triangle_data>::result_type intersection = intersector.intersect(ray, accelerationStructure);
                     if (intersection.type == raytracing::intersection_type::triangle) {
                         const uint32_t primitiveIdx = intersection.primitive_id;
-                        const uint32_t geometryIdx = intersection.geometry_id;
-                        const uint32_t primitiveBufferOffset = primitiveDataOffsets[geometryIdx];
-                        const float2 barycentricCoord = intersection.triangle_barycentric_coord;   // raytracing::triangle_data tag
-                        device const PrimitiveData& primitive = primitiveData[primitiveBufferOffset + primitiveIdx];
+                        device const PrimitiveData& primitive = primitiveData[primitiveIdx];
                         const float2 uv0 = primitive.uv0;
                         const float2 uv1 = primitive.uv1;
                         const float2 uv2 = primitive.uv2;
+                        const float2 barycentricCoord = intersection.triangle_barycentric_coord;   // raytracing::triangle_data tag
                         const float2 uv = uv1 * barycentricCoord.x + uv2 * barycentricCoord.y + uv0 * (1.0 - barycentricCoord.x - barycentricCoord.y);
                         const half3 rgb = textureLookup(textureData, primitive.textureDescriptor, uv);
                         color = half4(rgb, 1.0);
@@ -334,7 +316,7 @@ Renderer::Renderer(NS::SharedPtr<MTL::Device> device, const GltfModel& model)
     }
 
     {
-        const auto [textureData, primitiveData, primitiveDataOffsets] = buildPrimitiveData(model);
+        const auto [textureData, primitiveData] = buildPrimitiveData(rendererDesc);
         const std::size_t textureDataSize = textureData.size() * sizeof(Texture::BgraPixel);
         const std::size_t primitiveDataSize =
             primitiveData.size() * sizeof(shader_types::PrimitiveData);
@@ -346,65 +328,38 @@ Renderer::Renderer(NS::SharedPtr<MTL::Device> device, const GltfModel& model)
             NS::TransferPtr(mDevice->newBuffer(primitiveDataSize, MTL::ResourceStorageModeManaged));
         std::memcpy(mPrimitiveBuffer->contents(), primitiveData.data(), primitiveDataSize);
         mPrimitiveBuffer->didModifyRange(NS::Range::Make(0, mPrimitiveBuffer->length()));
-        mPrimitiveBufferOffsets = NS::TransferPtr(mDevice->newBuffer(
-            primitiveDataOffsets.size() * sizeof(std::uint32_t), MTL::ResourceStorageModeManaged));
-        std::memcpy(
-            mPrimitiveBufferOffsets->contents(),
-            primitiveDataOffsets.data(),
-            primitiveDataOffsets.size() * sizeof(std::uint32_t));
-        mPrimitiveBufferOffsets->didModifyRange(
-            NS::Range::Make(0, mPrimitiveBufferOffsets->length()));
     }
 
     {
-        // Build triangle geometry buffers
+        // Build triangle geometry buffer
 
-        std::vector<std::pair<NS::SharedPtr<MTL::Buffer>, NS::SharedPtr<MTL::Buffer>>> buffers;
-        for (const auto& mesh : model.meshes)
-        {
-            const std::size_t numVertices = mesh.positions.size();
-            const std::size_t numIndices = mesh.indices.size();
+        const std::size_t vertexDataSize = rendererDesc.positions.size_bytes();
+        const std::size_t indexDataSize = rendererDesc.indices.size_bytes();
 
-            const std::size_t vertexDataSize = numVertices * sizeof(glm::vec3);
-            const std::size_t indexDataSize = numIndices * sizeof(std::uint32_t);
-
-            auto vertexBuffer = NS::TransferPtr(
-                mDevice->newBuffer(vertexDataSize, MTL::ResourceStorageModeManaged));
-            auto indexBuffer =
-                NS::TransferPtr(mDevice->newBuffer(indexDataSize, MTL::ResourceStorageModeManaged));
-
-            std::memcpy(vertexBuffer->contents(), mesh.positions.data(), vertexDataSize);
-            std::memcpy(indexBuffer->contents(), mesh.indices.data(), indexDataSize);
-
-            vertexBuffer->didModifyRange(NS::Range::Make(0, vertexBuffer->length()));
-            indexBuffer->didModifyRange(NS::Range::Make(0, indexBuffer->length()));
-
-            buffers.emplace_back(std::move(vertexBuffer), std::move(indexBuffer));
-        }
+        auto vertexBuffer =
+            NS::TransferPtr(mDevice->newBuffer(vertexDataSize, MTL::ResourceStorageModeManaged));
+        auto indexBuffer =
+            NS::TransferPtr(mDevice->newBuffer(indexDataSize, MTL::ResourceStorageModeManaged));
+        std::memcpy(vertexBuffer->contents(), rendererDesc.positions.data(), vertexDataSize);
+        std::memcpy(indexBuffer->contents(), rendererDesc.indices.data(), indexDataSize);
+        vertexBuffer->didModifyRange(NS::Range::Make(0, vertexBuffer->length()));
+        indexBuffer->didModifyRange(NS::Range::Make(0, indexBuffer->length()));
 
         // Build geometry descriptors
 
-        std::vector<const NS::Object*> geometryDescriptors;
-        geometryDescriptors.reserve(buffers.size());
-        for (const auto& [vertexBuffer, indexBuffer] : buffers)
-        {
-            MTL::AccelerationStructureTriangleGeometryDescriptor* const triangleDesc =
-                MTL::AccelerationStructureTriangleGeometryDescriptor::alloc()->init();
-            triangleDesc->setVertexBuffer(vertexBuffer.get());
-            triangleDesc->setVertexFormat(MTL::AttributeFormatFloat3);
-            triangleDesc->setIndexBuffer(indexBuffer.get());
-            triangleDesc->setIndexType(MTL::IndexTypeUInt32);
-            triangleDesc->setTriangleCount(indexBuffer->length() / (sizeof(std::uint32_t) * 3));
-
-            const NS::Object* const triangleDescObj = static_cast<const NS::Object*>(triangleDesc);
-            geometryDescriptors.push_back(triangleDescObj);
-        }
+        auto triangleDesc =
+            NS::TransferPtr(MTL::AccelerationStructureTriangleGeometryDescriptor::alloc()->init());
+        triangleDesc->setVertexBuffer(vertexBuffer.get());
+        triangleDesc->setVertexFormat(MTL::AttributeFormatFloat3);
+        triangleDesc->setIndexBuffer(indexBuffer.get());
+        triangleDesc->setIndexType(MTL::IndexTypeUInt32);
+        triangleDesc->setTriangleCount(static_cast<NS::UInteger>(rendererDesc.indices.size()) / 3);
 
         // Build primitive acceleration structure
 
-        // TODO: are the pointers managed by the array or are they leaked?
-        auto geometryDescriptorsArray = NS::TransferPtr(
-            NS::Array::array(geometryDescriptors.data(), geometryDescriptors.size()));
+        // TODO: is the pointer owned by the array?
+        auto geometryDescriptorsArray =
+            NS::TransferPtr(NS::Array::array(static_cast<const NS::Object*>(triangleDesc.get())));
         auto primitiveAccelerationStructureDesc =
             NS::TransferPtr(MTL::PrimitiveAccelerationStructureDescriptor::alloc()->init());
         primitiveAccelerationStructureDesc->setGeometryDescriptors(geometryDescriptorsArray.get());
@@ -489,7 +444,6 @@ void Renderer::draw(const Camera& camera, const std::uint32_t width, const std::
     renderEncoder->setFragmentAccelerationStructure(mAccelerationStructure.get(), 1);
     renderEncoder->setFragmentBuffer(mTextureBuffer.get(), 0, 2);
     renderEncoder->setFragmentBuffer(mPrimitiveBuffer.get(), 0, 3);
-    renderEncoder->setFragmentBuffer(mPrimitiveBufferOffsets.get(), 0, 4);
     renderEncoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(6));
     renderEncoder->endEncoding();
 
