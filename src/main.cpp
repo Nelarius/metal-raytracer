@@ -30,8 +30,8 @@
 #include <stdexcept>
 #include <string_view>
 
-constexpr int              WIDTH = 640;
-constexpr int              HEIGHT = 480;
+constexpr int              WIDTH = 1710;
+constexpr int              HEIGHT = 1041;
 constexpr std::string_view WINDOW_TITLE = "metal-raytracer";
 
 namespace fs = std::filesystem;
@@ -123,7 +123,6 @@ try
 
     nlrs::UiRenderer          uiRenderer(device);
     nlrs::FlyCameraController cameraController;
-    cameraController.lookAt(glm::vec3(0.0f, 0.0f, 0.0f));
 
     int currentWidth = WIDTH;
     int currentHeight = HEIGHT;
@@ -176,6 +175,7 @@ try
             }
 
             ImGui::Begin("Rendering stats");
+
             ImGui::PlotHistogram(
                 "Raytracing times (ms)",
                 timings.data(),
@@ -191,6 +191,23 @@ try
                 "50th percentile: %.2f ms (%.2f FPS)", stats.p50Millis, 1000.0f / stats.p50Millis);
             ImGui::Text(
                 "75th percentile: %.2f ms (%.2f FPS)", stats.p75Millis, 1000.0f / stats.p75Millis);
+
+            ImGui::Separator();
+
+            ImGui::Text(
+                "camera position: (%.2f, %.2f, %.2f)",
+                cameraController.position().x,
+                cameraController.position().y,
+                cameraController.position().z);
+            ImGui::Text(
+                "camera yaw: %.2f, pitch: %.2f",
+                cameraController.yaw().asDegrees(),
+                cameraController.pitch().asDegrees());
+
+            ImGui::Separator();
+
+            ImGui::Text("resolution: %d x %d", currentWidth, currentHeight);
+
             ImGui::End();
         }
 
